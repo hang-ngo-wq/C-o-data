@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Code, Search, Copy, Check, Plus, RefreshCw, Globe, ExternalLink, X, AlertCircle } from 'lucide-react';
 import { HtmlPreviewResponse } from '../types';
+import { safeFetchJson } from '../utils/apiClient';
 
 interface HtmlInspectorModalProps {
   isOpen: boolean;
@@ -30,19 +31,24 @@ export const HtmlInspectorModal: React.FC<HtmlInspectorModalProps> = ({
     setError(null);
 
     try {
-      const res = await fetch('/api/fetch-preview', {
+      const { ok, data: result, error: fetchErr } = await safeFetchJson<HtmlPreviewResponse>('/api/fetch-preview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: url.trim() }),
       });
-      const result = await res.json();
+
+      if (!ok || !result) {
+        setError(fetchErr || 'Không thể tải mã nguồn trang web');
+        return;
+      }
+
       if (result.success) {
         setData(result);
       } else {
-        setError(result.error || 'Failed to fetch webpage preview');
+        setError(result.error || 'Không thể tải mã nguồn trang web');
       }
     } catch (err: any) {
-      setError(err.message || 'Network error');
+      setError(err.message || 'Lỗi kết nối mạng');
     } finally {
       setIsLoading(false);
     }

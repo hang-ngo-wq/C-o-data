@@ -8,8 +8,8 @@ import { parseElementInput } from './src/utils/selectorParser.js';
 const app = express();
 const PORT = 3000;
 
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
 // Lazy initialize Gemini client
 function getGeminiClient(): GoogleGenAI | null {
@@ -46,23 +46,98 @@ const DEFAULT_HEADERS: Record<string, string> = {
   'Upgrade-Insecure-Requests': '1',
 };
 
+// Helper: Extract structured data from Next.js, Nuxt or JSON-LD
+function extractStructuredData($: cheerio.CheerioAPI): any {
+  const structured: Record<string, any> = {};
+
+  // 1. Next.js __NEXT_DATA__
+  try {
+    const nextDataScript = $('script#__NEXT_DATA__').html();
+    if (nextDataScript) {
+      const parsed = JSON.parse(nextDataScript);
+      structured.nextData = parsed?.props?.pageProps || parsed?.props || parsed;
+    }
+  } catch (e) {
+    // Ignore JSON parse error
+  }
+
+  // 2. JSON-LD scripts
+  try {
+    $('script[type="application/ld+json"]').each((_, el) => {
+      const content = $(el).html();
+      if (content) {
+        try {
+          const ld = JSON.parse(content);
+          if (Array.isArray(ld)) {
+            structured.jsonLd = ld;
+          } else if (ld) {
+            structured.jsonLd = { ...(structured.jsonLd || {}), ...ld };
+          }
+        } catch (e) {
+          // Ignore
+        }
+      }
+    });
+  } catch (e) {
+    // Ignore
+  }
+
+  return structured;
+}
+
+// Helper: Deep search in JSON object for keys matching keyword
+function findValueInObject(obj: any, keys: string[]): string | null {
+  if (!obj || typeof obj !== 'object') return null;
+
+  for (const key of Object.keys(obj)) {
+    const lowerKey = key.toLowerCase();
+    const val = obj[key];
+
+    for (const targetKey of keys) {
+      if (lowerKey === targetKey.toLowerCase() || lowerKey.includes(targetKey.toLowerCase())) {
+        if (typeof val === 'string' && val.trim().length > 0) return val.trim();
+        // Handle salary min/max object like { min: 348, max: 501 }
+        if (val && typeof val === 'object' && ('min' in val || 'max' in val)) {
+          if (val.min && val.max) return `${val.min}万円～${val.max}万円`;
+          if (val.min) return `Từ ${val.min}万円`;
+          if (val.max) return `Đến ${val.max}万円`;
+        }
+        // Handle objects with name, title, or label
+        if (val && typeof val === 'object' && val.name && typeof val.name === 'string') return val.name.trim();
+        if (val && typeof val === 'object' && val.title && typeof val.title === 'string') return val.title.trim();
+        if (val && typeof val === 'object' && val.label && typeof val.label === 'string') return val.label.trim();
+        if (typeof val === 'number' && val > 100) return String(val);
+      }
+    }
+
+    if (val && typeof val === 'object') {
+      const nested = findValueInObject(val, keys);
+      if (nested) return nested;
+    }
+  }
+
+  return null;
+}
+
 // Scrape API
 app.post('/api/scrape', async (req, res) => {
   const startTime = Date.now();
+  res.setHeader('Content-Type', 'application/json');
+
   try {
     const { urls, fields, options = {} } = req.body;
 
     if (!urls || !Array.isArray(urls) || urls.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Please provide at least one valid URL.',
+        error: 'Vui lòng cung cấp ít nhất một đường link URL hợp lệ.',
       });
     }
 
     if (!fields || !Array.isArray(fields) || fields.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Please define at least one element or selector to extract.',
+        error: 'Vui lòng cấu hình ít nhất một phần tử / cột trích xuất.',
       });
     }
 
@@ -70,7 +145,7 @@ app.post('/api/scrape', async (req, res) => {
     const failedUrls: string[] = [];
     const logs: string[] = [];
 
-    // Process each URL
+    // Process each URL with reasonable timeout
     for (let uIdx = 0; uIdx < urls.length; uIdx++) {
       const rawUrl = String(urls[uIdx]).trim();
       if (!rawUrl) continue;
@@ -80,7 +155,7 @@ app.post('/api/scrape', async (req, res) => {
         targetUrl = 'https://' + targetUrl;
       }
 
-      logs.push(`[${uIdx + 1}/${urls.length}] Fetching: ${targetUrl}`);
+      logs.push(`[${uIdx + 1}/${urls.length}] Đang tải dữ liệu từ: ${targetUrl}`);
 
       let html = '';
       try {
@@ -88,18 +163,18 @@ app.post('/api/scrape', async (req, res) => {
         const response = await fetch(targetUrl, {
           headers: fetchHeaders,
           redirect: 'follow',
-          signal: AbortSignal.timeout(options.timeoutMs || 25000),
+          signal: AbortSignal.timeout(options.timeoutMs || 15000),
         });
 
         if (!response.ok) {
-          logs.push(`Failed to fetch ${targetUrl}: HTTP ${response.status} ${response.statusText}`);
+          logs.push(`Lỗi kết nối tới ${targetUrl}: HTTP ${response.status} ${response.statusText}`);
           failedUrls.push(targetUrl);
           rows.push({
             id: `row-${uIdx}-err`,
             url: targetUrl,
             data: {},
             cells: {},
-            error: `HTTP ${response.status}: ${response.statusText}`,
+            error: `Mã lỗi HTTP ${response.status}: ${response.statusText}`,
             timestamp: Date.now(),
           });
           continue;
@@ -107,14 +182,15 @@ app.post('/api/scrape', async (req, res) => {
 
         html = await response.text();
       } catch (err: any) {
-        logs.push(`Network error fetching ${targetUrl}: ${err.message}`);
+        const errorText = err.name === 'AbortError' ? 'Thời gian tải trang quá lâu (Timeout 15s)' : err.message;
+        logs.push(`Lỗi mạng tải ${targetUrl}: ${errorText}`);
         failedUrls.push(targetUrl);
         rows.push({
           id: `row-${uIdx}-err`,
           url: targetUrl,
           data: {},
           cells: {},
-          error: `Fetch error: ${err.message}`,
+          error: errorText,
           timestamp: Date.now(),
         });
         continue;
@@ -122,6 +198,7 @@ app.post('/api/scrape', async (req, res) => {
 
       // Load into Cheerio
       const $ = cheerio.load(html);
+      const structuredData = extractStructuredData($);
 
       // Check if containerSelector is provided for repeating items (e.g. .job-card)
       const containerSelector = options.containerSelector?.trim();
@@ -149,7 +226,7 @@ app.post('/api/scrape', async (req, res) => {
           foundContainers.each((_, el) => {
             containers.push($(el));
           });
-          logs.push(`Found ${containers.length} container elements using '${containerSelector}'`);
+          logs.push(`Đã tìm thấy ${containers.length} phần tử container khớp với '${containerSelector}'`);
         }
       }
 
@@ -206,7 +283,7 @@ app.post('/api/scrape', async (req, res) => {
                 const found = $(cand);
                 if (found.length > 0) {
                   matchedEl = found;
-                  selectorUsed = `${cand} (global)`;
+                  selectorUsed = `${cand} (toàn trang)`;
                   break;
                 }
               } catch (e) {
@@ -224,7 +301,6 @@ app.post('/api/scrape', async (req, res) => {
           if (matchedEl && matchedEl.length > 0) {
             found = true;
             matchCount = matchedEl.length;
-
             const targetElement = field.isList ? matchedEl : matchedEl.first();
 
             switch (field.extractType) {
@@ -289,6 +365,36 @@ app.post('/api/scrape', async (req, res) => {
             }
           }
 
+          // If not found via DOM and structured data exists (Next.js / Nuxt / JSON-LD)
+          if (!found && structuredData) {
+            const searchTerms: string[] = [];
+            const colName = (field.name || '').toLowerCase();
+            const sel = (field.selector || '').toLowerCase();
+
+            if (colName.includes('tiêu đề') || colName.includes('title') || colName.includes('job') || sel.includes('title')) {
+              searchTerms.push('name', 'title', 'jobTitle', 'jobName', 'headline', 'headlineName');
+            } else if (colName.includes('lương') || colName.includes('salary') || sel.includes('salary') || sel.includes('income')) {
+              searchTerms.push('salary', 'jobSalary', 'income', 'annualIncome', 'baseSalary', 'price');
+            } else if (colName.includes('công ty') || colName.includes('company') || sel.includes('company') || sel.includes('client')) {
+              searchTerms.push('company', 'companyName', 'client', 'clientName', 'hiringOrganization', 'organization');
+            } else if (colName.includes('địa điểm') || colName.includes('location') || sel.includes('location') || sel.includes('place')) {
+              searchTerms.push('location', 'workLocation', 'address', 'jobLocation', 'city');
+            } else if (colName.includes('mô tả') || colName.includes('desc') || sel.includes('description')) {
+              searchTerms.push('description', 'jobDescription', 'summary', 'detail');
+            }
+
+            if (searchTerms.length > 0) {
+              const matchedStructured = findValueInObject(structuredData, searchTerms);
+              if (matchedStructured) {
+                extractedValue = matchedStructured;
+                rawValue = matchedStructured;
+                selectorUsed = 'Dữ liệu cấu trúc SPA / Next.js State';
+                found = true;
+                matchCount = 1;
+              }
+            }
+          }
+
           // Fallback if empty and default value defined
           if (!extractedValue && field.defaultValue) {
             extractedValue = field.defaultValue;
@@ -305,23 +411,23 @@ app.post('/api/scrape', async (req, res) => {
         }
 
         // AI Fallback if requested and some fields were missed
-        if (options.useAiFallback) {
+        if (options.useAiFallback !== false) {
           const aiClient = getGeminiClient();
           const missingFields = fields.filter((f: any) => !cellInfo[f.id || f.name]?.found);
 
           if (aiClient && missingFields.length > 0) {
-            logs.push(`Calling Gemini AI fallback for ${missingFields.length} missing fields on ${targetUrl}...`);
+            logs.push(`Kích hoạt Gemini AI Fallback trích xuất ${missingFields.length} trường dữ liệu còn thiếu...`);
             try {
-              const bodyText = $('body').text().slice(0, 15000); // 15k chars context
-              const aiPrompt = `Extract the following data points from this webpage text:
+              const bodyText = $('body').text().slice(0, 15000);
+              const aiPrompt = `Trích xuất các trường dữ liệu sau từ nội dung website:
 Fields to extract:
-${missingFields.map((f: any) => `- ${f.name} (description/selector clue: ${f.selector})`).join('\n')}
+${missingFields.map((f: any) => `- Field ID: "${f.id || f.name}", Tên: "${f.name}", Selector gợi ý: "${f.selector}"`).join('\n')}
 
-Webpage URL: ${targetUrl}
-Webpage text content:
+URL: ${targetUrl}
+Nội dung văn bản website:
 ${bodyText}
 
-Return a JSON object where keys are the exact field IDs: ${JSON.stringify(missingFields.map((f: any) => f.id || f.name))}. If not found, return empty string.`;
+Trả về định dạng JSON object trong đó các keys là các Field ID chính xác: ${JSON.stringify(missingFields.map((f: any) => f.id || f.name))}. Nếu không tìm thấy, trả về chuỗi rỗng.`;
 
               const aiRes = await aiClient.models.generateContent({
                 model: 'gemini-3.7-flash',
@@ -335,12 +441,12 @@ Return a JSON object where keys are the exact field IDs: ${JSON.stringify(missin
                 const aiData = JSON.parse(aiRes.text.trim());
                 missingFields.forEach((f: any) => {
                   const fid = f.id || f.name;
-                  if (aiData[fid]) {
+                  if (aiData[fid] && String(aiData[fid]).trim() !== '') {
                     rowData[fid] = String(aiData[fid]);
                     cellInfo[fid] = {
                       value: String(aiData[fid]),
                       rawValue: String(aiData[fid]),
-                      selectorUsed: 'AI Semantic Extraction (Gemini 3.7 Flash)',
+                      selectorUsed: 'Gemini 3.7 Flash AI Semantic',
                       found: true,
                       matchCount: 1,
                     };
@@ -348,7 +454,7 @@ Return a JSON object where keys are the exact field IDs: ${JSON.stringify(missin
                 });
               }
             } catch (aiErr: any) {
-              logs.push(`AI fallback notice: ${aiErr.message}`);
+              logs.push(`Ghi chú AI Fallback: ${aiErr.message}`);
             }
           }
         }
@@ -378,7 +484,7 @@ Return a JSON object where keys are the exact field IDs: ${JSON.stringify(missin
     console.error('Scrape error:', error);
     return res.status(500).json({
       success: false,
-      error: error.message || 'Internal scraping error',
+      error: error.message || 'Lỗi hệ thống khi trích xuất dữ liệu',
       executionTimeMs: Date.now() - startTime,
     });
   }
@@ -386,10 +492,11 @@ Return a JSON object where keys are the exact field IDs: ${JSON.stringify(missin
 
 // HTML Preview & Inspector endpoint
 app.post('/api/fetch-preview', async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
   try {
     const { url } = req.body;
     if (!url) {
-      return res.status(400).json({ success: false, error: 'URL is required.' });
+      return res.status(400).json({ success: false, error: 'URL không được để trống.' });
     }
 
     let targetUrl = String(url).trim();
@@ -400,7 +507,7 @@ app.post('/api/fetch-preview', async (req, res) => {
     const response = await fetch(targetUrl, {
       headers: DEFAULT_HEADERS,
       redirect: 'follow',
-      signal: AbortSignal.timeout(20000),
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!response.ok) {
@@ -435,10 +542,7 @@ app.post('/api/fetch-preview', async (req, res) => {
       }
     });
 
-    // Clean text snippet
     const textSnippet = $('body').text().replace(/\s+/g, ' ').slice(0, 1500);
-
-    // Grab first 2000 lines of body HTML
     const bodyHtml = $('body').html()?.slice(0, 80000) || '';
 
     return res.json({
@@ -454,13 +558,14 @@ app.post('/api/fetch-preview', async (req, res) => {
   } catch (error: any) {
     return res.status(500).json({
       success: false,
-      error: error.message || 'Failed to inspect URL',
+      error: error.message || 'Không thể tải mã nguồn trang web',
     });
   }
 });
 
 // AI Auto Suggest Selectors
 app.post('/api/ai-suggest-selectors', async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
   try {
     const { url, goalDescription, htmlSnippet } = req.body;
     const aiClient = getGeminiClient();
@@ -468,14 +573,14 @@ app.post('/api/ai-suggest-selectors', async (req, res) => {
     if (!aiClient) {
       return res.status(400).json({
         success: false,
-        error: 'Gemini API key is not configured.',
+        error: 'Chưa cấu hình Gemini API Key trên máy chủ.',
       });
     }
 
     let pageHtml = htmlSnippet || '';
     if (!pageHtml && url) {
       try {
-        const response = await fetch(url, { headers: DEFAULT_HEADERS });
+        const response = await fetch(url, { headers: DEFAULT_HEADERS, signal: AbortSignal.timeout(12000) });
         const text = await response.text();
         const $ = cheerio.load(text);
         pageHtml = $('body').html()?.slice(0, 40000) || '';
@@ -534,7 +639,7 @@ Return a JSON array of suggested fields with:
     });
 
     if (!aiRes.text) {
-      return res.status(500).json({ success: false, error: 'No response from AI' });
+      return res.status(500).json({ success: false, error: 'Không nhận được phản hồi từ AI' });
     }
 
     const parsedData = JSON.parse(aiRes.text.trim());
@@ -546,7 +651,7 @@ Return a JSON array of suggested fields with:
     console.error('AI suggest error:', error);
     return res.status(500).json({
       success: false,
-      error: error.message || 'AI suggestion failed',
+      error: error.message || 'Lỗi khi gọi AI gợi ý selector',
     });
   }
 });

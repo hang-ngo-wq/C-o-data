@@ -8,6 +8,7 @@ import { HtmlInspectorModal } from './components/HtmlInspectorModal';
 import { TemplateManager } from './components/TemplateManager';
 import { HelpModal } from './components/HelpModal';
 import { ExtractedRow, ExtractionTemplate, FieldConfig, ScrapeResponse } from './types';
+import { safeFetchJson } from './utils/apiClient';
 import { Play, Sparkles, AlertCircle, RefreshCw, Layers, CheckCircle2, ChevronRight } from 'lucide-react';
 
 export default function App() {
@@ -107,7 +108,7 @@ export default function App() {
     setError(null);
 
     try {
-      const response = await fetch('/api/scrape', {
+      const { ok, data, error: fetchErr } = await safeFetchJson<ScrapeResponse>('/api/scrape', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -120,7 +121,10 @@ export default function App() {
         }),
       });
 
-      const data: ScrapeResponse = await response.json();
+      if (!ok || !data) {
+        setError(fetchErr || 'Không thể kết nối đến máy chủ.');
+        return;
+      }
 
       if (data.success) {
         setRows(data.rows);
@@ -148,7 +152,7 @@ export default function App() {
     setError(null);
 
     try {
-      const response = await fetch('/api/ai-suggest-selectors', {
+      const { ok, data, error: fetchErr } = await safeFetchJson<any>('/api/ai-suggest-selectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -157,7 +161,11 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
+      if (!ok || !data) {
+        setError(fetchErr || 'Không thể gọi AI phân tích.');
+        return;
+      }
+
       if (data.success && data.suggestions?.fields?.length > 0) {
         const newFields: FieldConfig[] = data.suggestions.fields.map((f: any, idx: number) => ({
           id: `f_ai_${Date.now()}_${idx}`,
