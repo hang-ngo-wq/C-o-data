@@ -3,6 +3,7 @@ import { Download, Sparkles, FileSpreadsheet, Globe, Layers, HelpCircle, Code } 
 
 interface HeaderProps {
   onLoadExample: () => void;
+  onOpenSampleDetector: () => void;
   onOpenInspector: () => void;
   onOpenTemplates: () => void;
   onOpenHelp: () => void;
@@ -10,6 +11,7 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   onLoadExample,
+  onOpenSampleDetector,
   onOpenInspector,
   onOpenTemplates,
   onOpenHelp,
@@ -42,11 +44,20 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="flex items-center space-x-2">
             <button
               type="button"
+              onClick={onOpenSampleDetector}
+              className="inline-flex items-center px-3 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 rounded-lg shadow-xs transition-all cursor-pointer"
+              title="Dựa vào 1 link mẫu & nội dung văn bản để tự động nhận diện CSS/HTML và điền cột trích xuất"
+            >
+              <Sparkles className="w-3.5 h-3.5 mr-1.5 text-yellow-300" />
+              Phân tích từ Link & Văn bản mẫu
+            </button>
+
+            <button
+              type="button"
               onClick={onLoadExample}
               className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
               title="Tải cấu hình mẫu ví dụ Circus Job"
             >
-              <Sparkles className="w-3.5 h-3.5 mr-1.5 text-amber-600" />
               Nạp ví dụ mẫu
             </button>
 

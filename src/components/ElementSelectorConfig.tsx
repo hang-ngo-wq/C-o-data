@@ -10,6 +10,7 @@ interface ElementSelectorConfigProps {
   onChangeContainerSelector: (val: string) => void;
   onAiSuggest: () => void;
   isAiSuggesting: boolean;
+  onOpenSampleDetector?: () => void;
   onOpenInspectorForField?: (fieldId: string) => void;
 }
 
@@ -20,6 +21,7 @@ export const ElementSelectorConfig: React.FC<ElementSelectorConfigProps> = ({
   onChangeContainerSelector,
   onAiSuggest,
   isAiSuggesting,
+  onOpenSampleDetector,
   onOpenInspectorForField,
 }) => {
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
@@ -86,12 +88,24 @@ export const ElementSelectorConfig: React.FC<ElementSelectorConfigProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {onOpenSampleDetector && (
+            <button
+              type="button"
+              onClick={onOpenSampleDetector}
+              className="inline-flex items-center px-3 py-1.5 text-xs font-bold text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 rounded-lg shadow-xs transition-all cursor-pointer"
+              title="Dựa vào 1 link mẫu và dán văn bản mẫu để tự động tìm CSS, HTML và điền các cột"
+            >
+              <Sparkles className="w-3.5 h-3.5 mr-1.5 text-yellow-300" />
+              Tự động nhận diện từ Link & Văn bản mẫu
+            </button>
+          )}
+
           <button
             type="button"
             onClick={onAiSuggest}
             disabled={isAiSuggesting}
-            className="inline-flex items-center px-3 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+            className="inline-flex items-center px-2.5 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
             title="Sử dụng Gemini AI để tự động phát hiện các phần tử quan trọng trên trang"
           >
             {isAiSuggesting ? (
@@ -101,8 +115,8 @@ export const ElementSelectorConfig: React.FC<ElementSelectorConfigProps> = ({
               </>
             ) : (
               <>
-                <Sparkles className="w-3.5 h-3.5 mr-1.5 text-purple-600" />
-                AI Tự động gợi ý Selector
+                <Code2 className="w-3.5 h-3.5 mr-1.5 text-purple-600" />
+                AI Gợi ý Selector
               </>
             )}
           </button>
@@ -113,7 +127,7 @@ export const ElementSelectorConfig: React.FC<ElementSelectorConfigProps> = ({
             className="inline-flex items-center px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
           >
             <SlidersHorizontal className="w-3.5 h-3.5 mr-1 text-slate-500" />
-            {showAdvanced ? 'Ẩn nâng cao' : 'Khung lặp (Cards)'}
+            {showAdvanced ? 'Ẩn nâng cao' : 'Khung lặp'}
           </button>
         </div>
       </div>

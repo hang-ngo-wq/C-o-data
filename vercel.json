@@ -7,6 +7,10 @@
       "destination": "/api/scrape"
     },
     {
+      "source": "/api/analyze-sample",
+      "destination": "/api/analyze-sample"
+    },
+    {
       "source": "/api/fetch-preview",
       "destination": "/api/fetch-preview"
     },

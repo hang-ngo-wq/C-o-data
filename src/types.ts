@@ -61,6 +61,26 @@ export interface ScrapeResponse {
   error?: string;
 }
 
+export interface DetectedFieldSuggestion {
+  name: string;
+  selector: string;
+  extractType: ExtractType;
+  attributeName?: string;
+  sampleFoundValue?: string;
+  confidence?: number;
+  source?: string;
+}
+
+export interface SampleAnalysisResponse {
+  success: boolean;
+  sampleUrl?: string;
+  detectedFields: DetectedFieldSuggestion[];
+  containerSelector?: string;
+  pageTitle?: string;
+  previewData?: Record<string, string>;
+  error?: string;
+}
+
 export interface ExtractionTemplate {
   id: string;
   name: string;

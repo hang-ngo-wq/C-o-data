@@ -522,6 +522,394 @@ export async function fetchPreview(url: string): Promise<HtmlPreviewResponse> {
   };
 }
 
+export function generateBestCssSelector($: cheerio.CheerioAPI, el: any): string {
+  if (!el || el.length === 0) return '';
+  const node = el.get(0);
+  if (!node || node.type !== 'tag') return '';
+
+  const tagName = node.tagName.toLowerCase();
+
+  // 1. If has ID
+  const id = el.attr('id');
+  if (id && !id.match(/^[0-9]/) && !id.includes(':') && id.length < 40) {
+    return `#${id}`;
+  }
+
+  // 2. Data attributes
+  const testId = el.attr('data-testid') || el.attr('data-test') || el.attr('data-cy');
+  if (testId) {
+    return `[data-testid="${testId}"]`;
+  }
+
+  // 3. Meaningful classes
+  const rawClass = el.attr('class');
+  if (rawClass) {
+    const classes = rawClass
+      .split(/\s+/)
+      .filter((c: string) => c.length > 2 && !c.startsWith('css-') && !c.includes('MuiBox-root') && !c.includes('active') && !c.includes('hover'));
+    
+    // Check specific semantic classes
+    const semanticClasses = classes.filter((c: string) => 
+      c.includes('title') || c.includes('name') || c.includes('salary') || c.includes('company') ||
+      c.includes('job') || c.includes('price') || c.includes('address') || c.includes('desc') ||
+      c.includes('detail') || c.includes('header') || c.includes('meta') || c.includes('item')
+    );
+
+    if (semanticClasses.length > 0) {
+      return `${tagName}.${semanticClasses.slice(0, 2).join('.')}`;
+    }
+
+    if (classes.length > 0) {
+      return `${tagName}.${classes[0]}`;
+    }
+  }
+
+  // 4. Parent context
+  const parent = el.parent();
+  if (parent && parent.length > 0 && parent.get(0).type === 'tag') {
+    const parentTag = parent.get(0).tagName.toLowerCase();
+    const parentClass = parent.attr('class');
+    if (parentClass) {
+      const pClasses = parentClass.split(/\s+/).filter((c: string) => !c.startsWith('css-') && c.length > 2);
+      if (pClasses.length > 0) {
+        return `.${pClasses[0]} ${tagName}`;
+      }
+    }
+    return `${parentTag} > ${tagName}`;
+  }
+
+  return tagName;
+}
+
+export async function analyzeSampleAndText(params: {
+  sampleUrl?: string;
+  sampleText?: string;
+  htmlSnippet?: string;
+}): Promise<{
+  success: boolean;
+  sampleUrl?: string;
+  detectedFields: Array<{
+    name: string;
+    selector: string;
+    extractType: 'text' | 'attribute' | 'html';
+    attributeName?: string;
+    sampleFoundValue?: string;
+    confidence?: number;
+    source?: string;
+  }>;
+  containerSelector?: string;
+  pageTitle?: string;
+  previewData?: Record<string, string>;
+  error?: string;
+}> {
+  const { sampleUrl, sampleText, htmlSnippet } = params;
+  let html = htmlSnippet || '';
+  let finalUrl = sampleUrl ? sampleUrl.trim() : '';
+
+  if (finalUrl && !finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
+    finalUrl = 'https://' + finalUrl;
+  }
+
+  if (!html && finalUrl) {
+    try {
+      const response = await fetch(finalUrl, {
+        headers: DEFAULT_HEADERS,
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
+      });
+      if (response.ok) {
+        html = await response.text();
+      }
+    } catch (e: any) {
+      console.warn('Could not fetch sample URL:', e.message);
+    }
+  }
+
+  if (!html && !sampleText) {
+    return {
+      success: false,
+      error: 'Vui lòng cung cấp một đường link URL mẫu hoặc dán nội dung văn bản mẫu từ trang web.',
+      detectedFields: [],
+    };
+  }
+
+  const $ = cheerio.load(html || '<div></div>');
+  const pageTitle = $('title').text().trim() || $('h1').first().text().trim() || '';
+  const structuredData = extractStructuredData($);
+
+  const detectedFields: Array<{
+    name: string;
+    selector: string;
+    extractType: 'text' | 'attribute' | 'html';
+    attributeName?: string;
+    sampleFoundValue?: string;
+    confidence?: number;
+    source?: string;
+  }> = [];
+
+  const previewData: Record<string, string> = {};
+
+  // 1. Process sampleText lines if provided
+  if (sampleText && sampleText.trim().length > 0) {
+    const rawLines = sampleText
+      .split(/[\r\n]+/)
+      .map(l => l.trim())
+      .filter(l => l.length > 0);
+
+    for (let idx = 0; idx < rawLines.length; idx++) {
+      const line = rawLines[idx];
+      let fieldLabel = `Cột ${idx + 1}`;
+      let targetValue = line;
+
+      // Check if line is "Label: Value" format (e.g. "Tiêu đề: Tuyển lập trình viên", "Lương: 350 - 500 man")
+      const colonMatch = line.match(/^([^:：]{2,25})[:：]\s*(.+)$/);
+      if (colonMatch) {
+        fieldLabel = colonMatch[1].trim();
+        targetValue = colonMatch[2].trim();
+      } else {
+        // Infer label from value content
+        const lower = line.toLowerCase();
+        if (lower.includes('lương') || lower.includes('salary') || lower.includes('万円') || lower.includes('đ/tháng') || lower.includes('vnd') || lower.includes('$')) {
+          fieldLabel = 'Mức lương / Salary';
+        } else if (lower.includes('công ty') || lower.includes('tnhh') || lower.includes('cổ phần') || lower.includes('株式会社') || lower.includes('corp') || lower.includes('ltd')) {
+          fieldLabel = 'Tên công ty / Company';
+        } else if (lower.includes('hà nội') || lower.includes('hồ chí minh') || lower.includes('đà nẵng') || lower.includes('tokyo') || lower.includes('quận') || lower.includes('địa chỉ') || lower.includes('address') || lower.includes('都') || lower.includes('県')) {
+          fieldLabel = 'Địa điểm làm việc / Location';
+        } else if (idx === 0) {
+          fieldLabel = 'Tiêu đề công việc / Title';
+        } else {
+          fieldLabel = `Thông tin ${idx + 1} (${targetValue.slice(0, 15)}...)`;
+        }
+      }
+
+      // Search Cheerio DOM for matching text
+      let matchedSelector = '';
+      let foundValue = '';
+      let matchedSource = 'DOM Match';
+
+      if (html && targetValue.length > 1) {
+        const searchSub = targetValue.slice(0, 40).replace(/["'\\]/g, '');
+        let bestEl: any = null;
+        let minTextLength = Infinity;
+
+        $('*').each((_, el) => {
+          if (el.type === 'tag' && el.tagName !== 'script' && el.tagName !== 'style' && el.tagName !== 'html' && el.tagName !== 'body') {
+            const txt = $(el).text();
+            if (txt.includes(searchSub)) {
+              if (txt.length < minTextLength) {
+                minTextLength = txt.length;
+                bestEl = $(el);
+              }
+            }
+          }
+        });
+
+        if (bestEl && bestEl.length > 0) {
+          matchedSelector = generateBestCssSelector($, bestEl);
+          foundValue = cleanText(bestEl.text(), { trimWhitespace: true });
+        }
+      }
+
+      // If not found in DOM, check Next.js / JSON-LD Structured Data
+      if (!matchedSelector && structuredData) {
+        const lowerLabel = fieldLabel.toLowerCase();
+        const searchKeys: string[] = [];
+        if (lowerLabel.includes('tiêu đề') || lowerLabel.includes('title') || lowerLabel.includes('name')) {
+          searchKeys.push('name', 'title', 'jobTitle');
+        } else if (lowerLabel.includes('lương') || lowerLabel.includes('salary')) {
+          searchKeys.push('expectedAnnualSalary', 'salary', 'income');
+        } else if (lowerLabel.includes('công ty') || lowerLabel.includes('company')) {
+          searchKeys.push('company', 'companyName', 'client');
+        } else if (lowerLabel.includes('địa điểm') || lowerLabel.includes('location') || lowerLabel.includes('address')) {
+          searchKeys.push('addressDetail', 'location', 'address');
+        }
+
+        if (searchKeys.length > 0) {
+          const val = findValueInObject(structuredData, searchKeys);
+          if (val) {
+            matchedSelector = `.${lowerLabel.includes('tiêu đề') ? 'job-title' : lowerLabel.includes('lương') ? 'salary' : lowerLabel.includes('công ty') ? 'company-name' : 'address'}`;
+            foundValue = val;
+            matchedSource = 'Next.js Structured State';
+          }
+        }
+      }
+
+      // Fallback selector if still empty
+      if (!matchedSelector) {
+        if (fieldLabel.toLowerCase().includes('tiêu đề') || fieldLabel.toLowerCase().includes('title')) {
+          matchedSelector = 'h1, .job-title, .title';
+        } else if (fieldLabel.toLowerCase().includes('lương') || fieldLabel.toLowerCase().includes('salary')) {
+          matchedSelector = '.salary, .job-salary, [class*="salary"]';
+        } else if (fieldLabel.toLowerCase().includes('công ty') || fieldLabel.toLowerCase().includes('company')) {
+          matchedSelector = '.company-name, .company, [class*="company"]';
+        } else if (fieldLabel.toLowerCase().includes('địa điểm') || fieldLabel.toLowerCase().includes('location')) {
+          matchedSelector = '.location, .address, [class*="location"]';
+        } else {
+          matchedSelector = `div:contains("${targetValue.slice(0, 20)}")`;
+        }
+        foundValue = targetValue;
+      }
+
+      detectedFields.push({
+        name: fieldLabel,
+        selector: matchedSelector,
+        extractType: 'text',
+        sampleFoundValue: foundValue || targetValue,
+        confidence: foundValue ? 0.95 : 0.7,
+        source: matchedSource,
+      });
+
+      previewData[fieldLabel] = foundValue || targetValue;
+    }
+  }
+
+  // 2. If no sample text was provided OR we want to auto-enrich from HTML
+  if (detectedFields.length === 0 && html) {
+    // Check Next.js state first for rich job portals (like circus-job, doda, rikunabi, wantedly)
+    if (structuredData?.nextData?.publicJob?.job) {
+      const job = structuredData.nextData.publicJob.job;
+      if (job.name) {
+        detectedFields.push({
+          name: 'Tiêu đề công việc / Job Title',
+          selector: '<div class="job-title MuiBox-root css-0">',
+          extractType: 'text',
+          sampleFoundValue: job.name,
+          confidence: 0.99,
+          source: 'Next.js Job Object',
+        });
+        previewData['Tiêu đề công việc / Job Title'] = job.name;
+      }
+      if (job.expectedAnnualSalary) {
+        const sal = job.expectedAnnualSalary.min && job.expectedAnnualSalary.max ? `${job.expectedAnnualSalary.min}万円～${job.expectedAnnualSalary.max}万円` : String(job.expectedAnnualSalary.min || job.expectedAnnualSalary);
+        detectedFields.push({
+          name: 'Mức lương / Salary',
+          selector: '.salary, .job-salary',
+          extractType: 'text',
+          sampleFoundValue: sal,
+          confidence: 0.99,
+          source: 'Next.js Job Object',
+        });
+        previewData['Mức lương / Salary'] = sal;
+      }
+      if (job.company?.name) {
+        detectedFields.push({
+          name: 'Tên công ty / Company',
+          selector: '.company-name, .client-name',
+          extractType: 'text',
+          sampleFoundValue: job.company.name,
+          confidence: 0.99,
+          source: 'Next.js Job Object',
+        });
+        previewData['Tên công ty / Company'] = job.company.name;
+      }
+      if (job.addressDetail || job.company?.address?.line1) {
+        const addr = job.addressDetail || `${job.company?.address?.line1 || ''} ${job.company?.address?.line2 || ''}`.trim();
+        detectedFields.push({
+          name: 'Địa điểm làm việc / Location',
+          selector: '.address, .location',
+          extractType: 'text',
+          sampleFoundValue: addr,
+          confidence: 0.95,
+          source: 'Next.js Job Object',
+        });
+        previewData['Địa điểm làm việc / Location'] = addr;
+      }
+      if (job.jobDescriptions) {
+        detectedFields.push({
+          name: 'Mô tả công việc / Job Description',
+          selector: '.job-description, .work-content',
+          extractType: 'text',
+          sampleFoundValue: String(job.jobDescriptions).slice(0, 100) + '...',
+          confidence: 0.9,
+          source: 'Next.js Job Object',
+        });
+        previewData['Mô tả công việc / Job Description'] = String(job.jobDescriptions).slice(0, 100);
+      }
+    } else {
+      // Standard DOM auto-detection
+      // Title
+      const h1 = $('h1').first();
+      if (h1.length > 0) {
+        detectedFields.push({
+          name: 'Tiêu đề / Title',
+          selector: generateBestCssSelector($, h1),
+          extractType: 'text',
+          sampleFoundValue: cleanText(h1.text(), { trimWhitespace: true }),
+          confidence: 0.95,
+          source: 'DOM H1',
+        });
+        previewData['Tiêu đề / Title'] = cleanText(h1.text(), { trimWhitespace: true });
+      }
+
+      // Salary / Price
+      $('[class*="salary"], [class*="price"], .salary, .price').first().each((_, el) => {
+        const txt = cleanText($(el).text(), { trimWhitespace: true });
+        if (txt && txt.length < 80) {
+          detectedFields.push({
+            name: 'Mức lương / Giá',
+            selector: generateBestCssSelector($, $(el)),
+            extractType: 'text',
+            sampleFoundValue: txt,
+            confidence: 0.9,
+            source: 'DOM Match',
+          });
+          previewData['Mức lương / Giá'] = txt;
+        }
+      });
+
+      // Company / Author
+      $('[class*="company"], [class*="client"], [class*="author"]').first().each((_, el) => {
+        const txt = cleanText($(el).text(), { trimWhitespace: true });
+        if (txt && txt.length < 100) {
+          detectedFields.push({
+            name: 'Tên công ty / Đơn vị',
+            selector: generateBestCssSelector($, $(el)),
+            extractType: 'text',
+            sampleFoundValue: txt,
+            confidence: 0.9,
+            source: 'DOM Match',
+          });
+          previewData['Tên công ty / Đơn vị'] = txt;
+        }
+      });
+    }
+  }
+
+  // 3. Optional Gemini AI enhancement if available
+  const aiClient = getGeminiClient();
+  if (aiClient && detectedFields.length < 2 && (html || sampleText)) {
+    try {
+      const aiRes = await suggestSelectorsWithAi(finalUrl, sampleText || 'Extract main job or article information', html.slice(0, 30000));
+      if (aiRes.success && aiRes.suggestions?.fields?.length > 0) {
+        for (const f of aiRes.suggestions.fields) {
+          if (!detectedFields.some(df => df.name.toLowerCase() === f.name.toLowerCase())) {
+            detectedFields.push({
+              name: f.name,
+              selector: f.selector,
+              extractType: f.extractType || 'text',
+              attributeName: f.attributeName,
+              sampleFoundValue: f.sampleExpected || '',
+              confidence: 0.9,
+              source: 'Gemini AI Analysis',
+            });
+            previewData[f.name] = f.sampleExpected || '';
+          }
+        }
+      }
+    } catch (aiErr) {
+      // Continue
+    }
+  }
+
+  return {
+    success: true,
+    sampleUrl: finalUrl,
+    pageTitle,
+    detectedFields,
+    previewData,
+  };
+}
+
 export async function suggestSelectorsWithAi(
   url?: string,
   goalDescription?: string,

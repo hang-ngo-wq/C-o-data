@@ -7,10 +7,11 @@ import { ExportToolbar } from './components/ExportToolbar';
 import { HtmlInspectorModal } from './components/HtmlInspectorModal';
 import { TemplateManager } from './components/TemplateManager';
 import { HelpModal } from './components/HelpModal';
+import { SampleAutoDetectorModal } from './components/SampleAutoDetectorModal';
 import { ExtractedRow, ExtractionTemplate, FieldConfig, ScrapeResponse } from './types';
 import { safeFetchJson } from './utils/apiClient';
 import { executeClientSideScrape } from './utils/clientScraper';
-import { Play, Sparkles, AlertCircle, RefreshCw, Layers, CheckCircle2, ChevronRight } from 'lucide-react';
+import { Play, Sparkles, AlertCircle, RefreshCw, Layers, CheckCircle2, ChevronRight, FileSpreadsheet, ArrowRight } from 'lucide-react';
 
 export default function App() {
   // 1. Initial State with User's Example
@@ -55,9 +56,24 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
 
   // 3. Modals
+  const [showSampleDetector, setShowSampleDetector] = useState<boolean>(false);
   const [showInspector, setShowInspector] = useState<boolean>(false);
   const [showTemplates, setShowTemplates] = useState<boolean>(false);
   const [showHelp, setShowHelp] = useState<boolean>(false);
+
+  // Handle Apply Fields from Sample Auto Detector
+  const handleApplySampleDetection = (newFields: FieldConfig[], detectedContainer?: string, detectedUrl?: string) => {
+    if (newFields.length > 0) {
+      setFields(newFields);
+    }
+    if (detectedContainer) {
+      setContainerSelector(detectedContainer);
+    }
+    if (detectedUrl && urls.length === 1 && (!urls[0] || urls[0] === '')) {
+      setUrls([detectedUrl]);
+    }
+    setError(null);
+  };
 
   // Load Example Handler
   const handleLoadExample = () => {
@@ -240,6 +256,7 @@ export default function App() {
       {/* Top Header */}
       <Header
         onLoadExample={handleLoadExample}
+        onOpenSampleDetector={() => setShowSampleDetector(true)}
         onOpenInspector={() => setShowInspector(true)}
         onOpenTemplates={() => setShowTemplates(true)}
         onOpenHelp={() => setShowHelp(true)}
@@ -247,6 +264,32 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+        {/* Quick Sample-to-Batch Guidance Banner */}
+        <div className="bg-gradient-to-r from-indigo-900 via-indigo-800 to-purple-900 text-white rounded-2xl p-5 shadow-sm border border-indigo-700/50 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/30 text-indigo-200 border border-indigo-400/30">
+              <Sparkles className="w-3 h-3 text-yellow-300 mr-1" />
+              Quy trình thông minh: Link Mẫu &rarr; Xác định CSS/HTML &rarr; Cào Hàng Loạt
+            </div>
+            <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">
+              Tự động phân tích từ 1 link mẫu &amp; cào nhiều link xuất Excel
+            </h2>
+            <p className="text-xs text-indigo-200 max-w-2xl leading-relaxed">
+              Nhập 1 link mẫu và dán nội dung văn bản cần bóc tách. Hệ thống sẽ tự dò tìm thẻ HTML, class CSS và điền danh sách Elements để bạn cào hàng loạt link cùng loại.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowSampleDetector(true)}
+            className="shrink-0 px-4 py-2.5 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-900 font-bold text-xs rounded-xl shadow-md transition-all flex items-center space-x-2 cursor-pointer"
+          >
+            <Sparkles className="w-4 h-4 text-slate-900" />
+            <span>Mở Trình Phân Tích Link Mẫu</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+
         {/* Error Notification */}
         {error && (
           <div className="p-4 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs sm:text-sm flex items-start justify-between shadow-xs">
@@ -282,6 +325,7 @@ export default function App() {
           onChangeContainerSelector={setContainerSelector}
           onAiSuggest={handleAiSuggest}
           isAiSuggesting={isAiSuggesting}
+          onOpenSampleDetector={() => setShowSampleDetector(true)}
           onOpenInspectorForField={() => setShowInspector(true)}
         />
 
@@ -348,6 +392,13 @@ export default function App() {
       </footer>
 
       {/* Modals */}
+      <SampleAutoDetectorModal
+        isOpen={showSampleDetector}
+        onClose={() => setShowSampleDetector(false)}
+        onApplyFields={handleApplySampleDetection}
+        currentSampleUrl={urls[0] || ''}
+      />
+
       <HtmlInspectorModal
         isOpen={showInspector}
         onClose={() => setShowInspector(false)}

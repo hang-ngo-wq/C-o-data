@@ -1,7 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { executeScrape, fetchPreview, suggestSelectorsWithAi } from './src/utils/scraperEngine.js';
+import { executeScrape, fetchPreview, suggestSelectorsWithAi, analyzeSampleAndText } from './src/utils/scraperEngine.js';
 
 const app = express();
 const PORT = 3000;
@@ -36,6 +36,23 @@ app.post('/api/scrape', async (req, res) => {
     return res.status(500).json({
       success: false,
       error: error.message || 'Lỗi hệ thống khi trích xuất dữ liệu',
+    });
+  }
+});
+
+// 2. Analyze Sample & Text API (Xác định CSS/HTML tự động từ 1 link mẫu & văn bản)
+app.post('/api/analyze-sample', async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  try {
+    const { sampleUrl, sampleText, htmlSnippet } = req.body || {};
+    const result = await analyzeSampleAndText({ sampleUrl, sampleText, htmlSnippet });
+    return res.status(result.success ? 200 : 400).json(result);
+  } catch (error: any) {
+    console.error('Analyze sample error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Lỗi khi phân tích link mẫu & văn bản',
+      detectedFields: [],
     });
   }
 });

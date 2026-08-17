@@ -1,13 +1,173 @@
 import * as cheerio from 'cheerio';
-import { FieldConfig, ScrapeOptions, ScrapeResponse, ExtractedRow } from '../types.js';
+import { FieldConfig, ScrapeOptions, ScrapeResponse, ExtractedRow, SampleAnalysisResponse } from '../types.js';
 import { parseElementInput } from './selectorParser.js';
-import { extractStructuredData, findValueInObject, cleanText } from './scraperEngine.js';
+import { extractStructuredData, findValueInObject, cleanText, generateBestCssSelector } from './scraperEngine.js';
 
 const CORS_PROXIES = [
   (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   (url: string) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
+
+export async function analyzeSampleAndTextClient(params: {
+  sampleUrl?: string;
+  sampleText?: string;
+  htmlSnippet?: string;
+}): Promise<SampleAnalysisResponse> {
+  const { sampleUrl, sampleText, htmlSnippet } = params;
+  let html = htmlSnippet || '';
+  let finalUrl = sampleUrl ? sampleUrl.trim() : '';
+
+  if (finalUrl && !finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
+    finalUrl = 'https://' + finalUrl;
+  }
+
+  if (!html && finalUrl) {
+    try {
+      html = await fetchHtmlWithCorsFallback(finalUrl, 15000);
+    } catch (e: any) {
+      console.warn('Client fallback fetch sample URL error:', e.message);
+    }
+  }
+
+  const $ = cheerio.load(html || '<div></div>');
+  const pageTitle = $('title').text().trim() || $('h1').first().text().trim() || '';
+  const structuredData = extractStructuredData($);
+
+  const detectedFields: any[] = [];
+  const previewData: Record<string, string> = {};
+
+  if (sampleText && sampleText.trim().length > 0) {
+    const rawLines = sampleText
+      .split(/[\r\n]+/)
+      .map(l => l.trim())
+      .filter(l => l.length > 0);
+
+    for (let idx = 0; idx < rawLines.length; idx++) {
+      const line = rawLines[idx];
+      let fieldLabel = `Cột ${idx + 1}`;
+      let targetValue = line;
+
+      const colonMatch = line.match(/^([^:：]{2,25})[:：]\s*(.+)$/);
+      if (colonMatch) {
+        fieldLabel = colonMatch[1].trim();
+        targetValue = colonMatch[2].trim();
+      } else {
+        const lower = line.toLowerCase();
+        if (lower.includes('lương') || lower.includes('salary') || lower.includes('万円') || lower.includes('vnd') || lower.includes('$')) {
+          fieldLabel = 'Mức lương / Salary';
+        } else if (lower.includes('công ty') || lower.includes('tnhh') || lower.includes('株式会社') || lower.includes('corp')) {
+          fieldLabel = 'Tên công ty / Company';
+        } else if (lower.includes('địa chỉ') || lower.includes('hà nội') || lower.includes('hồ chí minh') || lower.includes('tokyo') || lower.includes('address')) {
+          fieldLabel = 'Địa điểm làm việc / Location';
+        } else if (idx === 0) {
+          fieldLabel = 'Tiêu đề công việc / Title';
+        } else {
+          fieldLabel = `Cột ${idx + 1}`;
+        }
+      }
+
+      let matchedSelector = '';
+      let foundValue = '';
+      let matchedSource = 'DOM Match';
+
+      if (html && targetValue.length > 1) {
+        const searchSub = targetValue.slice(0, 35).replace(/["'\\]/g, '');
+        let bestEl: any = null;
+        let minTextLength = Infinity;
+
+        $('*').each((_, el) => {
+          if (el.type === 'tag' && el.tagName !== 'script' && el.tagName !== 'style') {
+            const txt = $(el).text();
+            if (txt.includes(searchSub)) {
+              if (txt.length < minTextLength) {
+                minTextLength = txt.length;
+                bestEl = $(el);
+              }
+            }
+          }
+        });
+
+        if (bestEl && bestEl.length > 0) {
+          matchedSelector = generateBestCssSelector($, bestEl);
+          foundValue = cleanText(bestEl.text(), { trimWhitespace: true });
+        }
+      }
+
+      if (!matchedSelector && structuredData) {
+        const searchKeys = fieldLabel.toLowerCase().includes('lương') ? ['salary', 'expectedAnnualSalary'] : fieldLabel.toLowerCase().includes('công ty') ? ['company', 'companyName'] : ['name', 'title'];
+        const val = findValueInObject(structuredData, searchKeys);
+        if (val) {
+          matchedSelector = fieldLabel.toLowerCase().includes('lương') ? '.salary' : fieldLabel.toLowerCase().includes('công ty') ? '.company-name' : '.job-title';
+          foundValue = val;
+          matchedSource = 'SPA Next.js State';
+        }
+      }
+
+      if (!matchedSelector) {
+        matchedSelector = fieldLabel.toLowerCase().includes('tiêu đề') ? 'h1, .job-title' : fieldLabel.toLowerCase().includes('lương') ? '.salary' : '.item-detail';
+        foundValue = targetValue;
+      }
+
+      detectedFields.push({
+        name: fieldLabel,
+        selector: matchedSelector,
+        extractType: 'text',
+        sampleFoundValue: foundValue || targetValue,
+        confidence: foundValue ? 0.95 : 0.7,
+        source: matchedSource,
+      });
+
+      previewData[fieldLabel] = foundValue || targetValue;
+    }
+  }
+
+  if (detectedFields.length === 0 && structuredData?.nextData?.publicJob?.job) {
+    const job = structuredData.nextData.publicJob.job;
+    if (job.name) {
+      detectedFields.push({
+        name: 'Tiêu đề công việc / Job Title',
+        selector: '<div class="job-title MuiBox-root css-0">',
+        extractType: 'text',
+        sampleFoundValue: job.name,
+        confidence: 0.99,
+        source: 'Next.js Job Object',
+      });
+      previewData['Tiêu đề công việc / Job Title'] = job.name;
+    }
+    if (job.expectedAnnualSalary) {
+      const sal = job.expectedAnnualSalary.min && job.expectedAnnualSalary.max ? `${job.expectedAnnualSalary.min}万円～${job.expectedAnnualSalary.max}万円` : String(job.expectedAnnualSalary.min || job.expectedAnnualSalary);
+      detectedFields.push({
+        name: 'Mức lương / Salary',
+        selector: '.salary, .job-salary',
+        extractType: 'text',
+        sampleFoundValue: sal,
+        confidence: 0.99,
+        source: 'Next.js Job Object',
+      });
+      previewData['Mức lương / Salary'] = sal;
+    }
+    if (job.company?.name) {
+      detectedFields.push({
+        name: 'Tên công ty / Company',
+        selector: '.company-name, .client-name',
+        extractType: 'text',
+        sampleFoundValue: job.company.name,
+        confidence: 0.99,
+        source: 'Next.js Job Object',
+      });
+      previewData['Tên công ty / Company'] = job.company.name;
+    }
+  }
+
+  return {
+    success: true,
+    sampleUrl: finalUrl,
+    pageTitle,
+    detectedFields,
+    previewData,
+  };
+}
 
 async function fetchHtmlWithCorsFallback(targetUrl: string, timeoutMs: number = 15000): Promise<string> {
   // 1. Try direct fetch first
