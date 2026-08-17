@@ -1,0 +1,6 @@
+{
+  "name": "Web Data Extractor & Excel Exporter",
+  "description": "Extract content from web pages using URLs and HTML element selectors, preview extracted data, and export to Excel (.xlsx) files.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
