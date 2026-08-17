@@ -1,0 +1,26 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "rewrites": [
+    {
+      "source": "/api/scrape",
+      "destination": "/api/scrape"
+    },
+    {
+      "source": "/api/fetch-preview",
+      "destination": "/api/fetch-preview"
+    },
+    {
+      "source": "/api/ai-suggest-selectors",
+      "destination": "/api/ai-suggest-selectors"
+    },
+    {
+      "source": "/api/health",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

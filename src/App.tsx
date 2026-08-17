@@ -9,6 +9,7 @@ import { TemplateManager } from './components/TemplateManager';
 import { HelpModal } from './components/HelpModal';
 import { ExtractedRow, ExtractionTemplate, FieldConfig, ScrapeResponse } from './types';
 import { safeFetchJson } from './utils/apiClient';
+import { executeClientSideScrape } from './utils/clientScraper';
 import { Play, Sparkles, AlertCircle, RefreshCw, Layers, CheckCircle2, ChevronRight } from 'lucide-react';
 
 export default function App() {
@@ -121,20 +122,41 @@ export default function App() {
         }),
       });
 
-      if (!ok || !data) {
-        setError(fetchErr || 'Không thể kết nối đến máy chủ.');
-        return;
-      }
-
-      if (data.success) {
+      if (ok && data && data.success) {
         setRows(data.rows);
         setExecutionTimeMs(data.executionTimeMs);
         if (data.logs) setLogs(data.logs);
+        return;
+      }
+
+      // If server returned 404/500/HTML error or serverless is unavailable (e.g. static hosting on Vercel), fallback to client-side scraper!
+      const clientResult = await executeClientSideScrape(validUrls, validFields, {
+        containerSelector: containerSelector.trim() || undefined,
+      });
+
+      if (clientResult.success && clientResult.rows.length > 0) {
+        setRows(clientResult.rows);
+        setExecutionTimeMs(clientResult.executionTimeMs);
+        if (clientResult.logs) setLogs(clientResult.logs);
       } else {
-        setError(data.error || 'Có lỗi xảy ra trong quá trình trích xuất dữ liệu.');
+        setError(data?.error || fetchErr || 'Có lỗi xảy ra trong quá trình trích xuất dữ liệu.');
       }
     } catch (err: any) {
-      setError(err.message || 'Lỗi kết nối đến máy chủ.');
+      // Direct client-side fallback
+      try {
+        const clientResult = await executeClientSideScrape(validUrls, validFields, {
+          containerSelector: containerSelector.trim() || undefined,
+        });
+        if (clientResult.success) {
+          setRows(clientResult.rows);
+          setExecutionTimeMs(clientResult.executionTimeMs);
+          if (clientResult.logs) setLogs(clientResult.logs);
+        } else {
+          setError(err.message || 'Lỗi khi trích xuất dữ liệu.');
+        }
+      } catch (clientErr: any) {
+        setError(clientErr.message || 'Không thể trích xuất dữ liệu từ các liên kết này.');
+      }
     } finally {
       setIsLoading(false);
     }
